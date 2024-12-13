@@ -1,183 +1,132 @@
-import os
 from kivy.app import App
-from kivy.uix.filechooser import FileChooserListView
-from kivymd.uix.button import MDRaisedButton, MDFlatButton
-from kivymd.uix.label import MDLabel
-from kivymd.uix.floatlayout import FloatLayout
-from kivymd.uix.screenmanager import Screen, ScreenManager
+from kivy.uix.button import Button
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.label import Label
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.filechooser import FileChooserIconView
+from kivymd.uix.button import MDRaisedButton
 from kivymd.uix.dialog import MDDialog
-from kivy.uix.behaviors import DragBehavior
-from threading import Thread
+from kivymd.app import MDApp
+from kivy.clock import Clock
 import time
-import shutil
 
-class DraggableButton(DragBehavior, MDRaisedButton):
-    """This class creates a draggable button that can float over the screen."""
+
+class TestScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.background_normal = ''  # Remove button background
-        self.background_color = (0, 0, 1, 1)  # Blue color
-        self.size_hint = None, None
-        self.size = (80, 80)  # Set the size to a smaller circle
-        self.text = "Start"  # Default text for the floating button
+        self.passwords = []
+        self.index = 0  # Start from the first password
+        self.bin = []  # To store invalid passwords
+        self.speed = 1  # Speed control: 1 password per second (default)
 
-class MainScreen(Screen):
-    def __init__(self, app, **kwargs):
-        super().__init__(**kwargs)
-        self.app = app
-        self.file_path = None  # Path to the password file
-        self.passwords = []  # List of passwords from the file
-        self.current_index = 0  # Tracks current password being tested
-        self.invalid_passwords = []  # Passwords added to the bin
-        self.running = False  # Controls the password testing loop
-        self.last_tested_password = None  # Tracks the last tested password
-        self.hovering_btn = None
-        self.status_label = None
-        self.test_options = None  # To hold the test options UI
+        self.test_status_label = Label(text="Ready to start testing.", size_hint=(None, None), pos=(100, 300))
+        self.add_widget(self.test_status_label)
 
-        self.layout = FloatLayout()
-        self.create_widgets()
+        # Add "Start" button
+        start_button = MDRaisedButton(text="Start", pos=(100, 200), on_release=self.start_testing)
+        self.add_widget(start_button)
 
-        self.add_widget(self.layout)
+        # Add "Stop" button
+        stop_button = MDRaisedButton(text="Stop", pos=(200, 200), on_release=self.stop_testing)
+        self.add_widget(stop_button)
 
-        self.create_downloads_folder()  # Ensure folder exists in Downloads
+        # Add "Load File" button
+        load_file_button = MDRaisedButton(text="Load File", pos=(100, 150), on_release=self.load_file)
+        self.add_widget(load_file_button)
 
-    def create_widgets(self):
-        """Create all the widgets for the main screen."""
-        # Get Button to show the hovering button
-        get_button = MDRaisedButton(text="Get Button", size_hint=(None, None), size=(200, 50), pos_hint={'x': 0.1, 'y': 0.8})
-        get_button.bind(on_press=self.show_hover_button)
-        self.layout.add_widget(get_button)
+    def load_file(self, instance):
+        # Open the file chooser to pick a .txt file
+        file_chooser = FileChooserIconView()
+        file_chooser.bind(on_selection=self.load_passwords_from_file)
+        self.add_widget(file_chooser)
 
-        # Bin Button
-        bin_button = MDRaisedButton(text="Bin", size_hint=(None, None), size=(200, 50), pos_hint={'x': 0.1, 'y': 0.6})
-        bin_button.bind(on_press=self.view_bin)
-        self.layout.add_widget(bin_button)
-
-        # Load File Button
-        load_file_button = MDRaisedButton(text="Load File", size_hint=(None, None), size=(200, 50), pos_hint={'x': 0.1, 'y': 0.4})
-        load_file_button.bind(on_press=self.load_file_popup)
-        self.layout.add_widget(load_file_button)
-
-        # Status Label for keyboard (if visible or hidden)
-        self.status_label = MDLabel(text="Keyboard Status: Hidden", size_hint=(None, None), size=(200, 50), pos_hint={'x': 0.1, 'y': 0.2})
-        self.layout.add_widget(self.status_label)
-
-    def create_downloads_folder(self):
-        """Check if folder exists in Downloads, if not, create it."""
-        downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
-        app_folder_path = os.path.join(downloads_path, "PasswordApp")
-
-        if not os.path.exists(app_folder_path):
-            os.makedirs(app_folder_path)
-
-        self.app_folder_path = app_folder_path  # Store the path for later use
-
-    def show_hover_button(self, instance):
-        """This function will create and show the floating button when the 'Get Button' is pressed."""
-        if not self.hovering_btn:
-            self.hovering_btn = DraggableButton(pos_hint={'x': 0.7, 'y': 0.8})
-            self.hovering_btn.bind(on_press=self.toggle_test_options)
-            self.layout.add_widget(self.hovering_btn)
-
-    def toggle_test_options(self, instance):
-        """Show or hide the options when the hovering button is clicked."""
-        if self.test_options:
-            self.layout.remove_widget(self.test_options)
-            self.test_options = None
-        else:
-            self.test_options = FloatLayout()
-
-            start_button = MDRaisedButton(text="Start", size_hint=(None, None), size=(150, 50), pos_hint={'x': 0.3, 'y': 0.7})
-            start_button.bind(on_press=self.start_typing)
-            self.test_options.add_widget(start_button)
-
-            stop_button = MDRaisedButton(text="Stop", size_hint=(None, None), size=(150, 50), pos_hint={'x': 0.3, 'y': 0.5})
-            stop_button.bind(on_press=self.stop_typing)
-            self.test_options.add_widget(stop_button)
-
-            stats_button = MDRaisedButton(text="Stats", size_hint=(None, None), size=(150, 50), pos_hint={'x': 0.3, 'y': 0.3})
-            stats_button.bind(on_press=self.show_stats)
-            self.test_options.add_widget(stats_button)
-
-            self.layout.add_widget(self.test_options)
-
-    def start_typing(self, instance):
-        """Start typing passwords."""
-        if not self.file_path or self.current_index >= len(self.passwords):
-            self.show_popup("Error", "No passwords to test. Load a file first.")
-            return
-
-        self.running = True
-        Thread(target=self.type_passwords).start()
-
-    def stop_typing(self, instance):
-        """Stop the password testing."""
-        self.running = False
-        self.show_popup("Info", "Password testing stopped.")
-
-    def type_passwords(self):
-        """Simulate typing the passwords with a delay between each one."""
-        while self.running and self.current_index < len(self.passwords):
-            password = self.passwords[self.current_index]
-            self.last_tested_password = password  # Keep track of the last tested password
-
-            # Add to bin if password doesn't work (simulated logic)
-            self.invalid_passwords.append(password)
-
-            self.current_index += 1
-            time.sleep(0.2)
-
-        if self.current_index >= len(self.passwords):
-            self.show_popup("Info", "All passwords tested. Check the bin for potential passwords.")
-        self.running = False
-
-    def show_popup(self, title, message):
-        """Show a popup using MDDialog."""
-        dialog = MDDialog(title=title, text=message, size_hint=(0.8, 0.5))
-        dialog.open()
-
-    def load_file_popup(self, instance):
-        """Open file chooser popup to load the password file."""
-        content = FileChooserListView(on_submit=self.load_file, filters=["*.txt"])
-        filechooser_popup = Popup(title="Select Password File", content=content, size_hint=(0.9, 0.9))
-        content.popup = filechooser_popup
-        filechooser_popup.open()
-
-    def load_file(self, filechooser, selection, touch=None):
-        """Load the file and process passwords."""
+    def load_passwords_from_file(self, filechooser, selection):
+        # If a file is selected, load the passwords
         if selection:
-            self.file_path = selection[0]
-            destination = os.path.join(self.app_folder_path, os.path.basename(self.file_path))
-            shutil.copy(self.file_path, destination)
+            file_path = selection[0]
+            with open(file_path, 'r') as file:
+                self.passwords = file.read().splitlines()
+            self.index = 0  # Reset index
+            self.bin = []  # Clear invalid bin
+            self.test_status_label.text = f"Loaded {len(self.passwords)} passwords."
+            print(f"Passwords loaded: {self.passwords}")
 
-            with open(destination, 'r') as file:
-                self.passwords = [line.strip() for line in file if len(line.strip()) == 6 and line.strip().isdigit()]
+    def start_testing(self, instance):
+        if not self.passwords:
+            self.test_status_label.text = "No passwords to test."
+            return
+        self.test_status_label.text = f"Testing password {self.index + 1}/{len(self.passwords)}"
+        Clock.schedule_once(self.test_next_password, 1 / self.speed)  # Start testing with specified speed
 
-            if not self.passwords:
-                self.show_popup("Error", "No valid 6-digit passwords found in the file.")
-                self.file_path = None
+    def stop_testing(self, instance):
+        self.test_status_label.text = "Testing paused."
+        Clock.unschedule(self.test_next_password)  # Stop the test when pressed
+
+    def test_next_password(self, dt):
+        if self.index < len(self.passwords):
+            current_password = self.passwords[self.index]
+            # Simulate password testing
+            valid = self.simulate_password_test(current_password)  # Placeholder method to simulate the test
+
+            if not valid:
+                self.bin.append(current_password)  # Invalid password
+            self.index += 1
+            self.test_status_label.text = f"Testing password {self.index + 1}/{len(self.passwords)}"
+            if self.index < len(self.passwords):
+                Clock.schedule_once(self.test_next_password, 1 / self.speed)
             else:
-                self.current_index = 0
-                self.show_popup("Success", f"Loaded {len(self.passwords)} valid passwords from file.")
-        
-        filechooser.popup.dismiss()
+                self.test_status_label.text = "Testing complete."
+        else:
+            self.test_status_label.text = "No more passwords to test."
 
-    def show_stats(self, instance):
-        """Show the stats of tested passwords."""
-        stats_message = f"Tested {self.current_index}/{len(self.passwords)} passwords."
-        self.show_popup("Stats", stats_message)
+    def simulate_password_test(self, password):
+        # This is a placeholder for your password testing logic
+        # Simulate that passwords ending in '123' are invalid
+        return not password.endswith('123')
 
-    def view_bin(self, instance):
-        """View the bin of invalid passwords."""
-        bin_content = "\n".join(self.invalid_passwords) if self.invalid_passwords else "No invalid passwords yet."
-        self.show_popup("Bin", bin_content)
+    def view_bin(self):
+        # Method to show the bin (invalid passwords)
+        bin_dialog = MDDialog(title="Invalid Passwords", text=str(self.bin), size_hint=(0.8, 0.4))
+        bin_dialog.open()
 
-class PasswordApp(App):
+
+class FloatingButton(FloatLayout):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.test_screen = TestScreen(name="test_screen")
+
+        # Floating action button (FAB)
+        self.fab = MDRaisedButton(text="Test", size_hint=(None, None), size=(100, 100), pos=(10, 10),
+                                  on_release=self.toggle_test_screen)
+        self.add_widget(self.fab)
+
+        # Add a button for viewing the bin
+        bin_button = MDRaisedButton(text="View Bin", size_hint=(None, None), size=(100, 50), pos=(150, 10),
+                                    on_release=self.test_screen.view_bin)
+        self.add_widget(bin_button)
+
+    def toggle_test_screen(self, instance):
+        # Switch to the TestScreen when clicked
+        app = MDApp.get_running_app()
+        app.screen_manager.current = 'test_screen'
+
+
+class MyApp(MDApp):
     def build(self):
-        sm = ScreenManager()
-        sm.add_widget(MainScreen(app=self, name="main"))
-        return sm
+        self.screen_manager = ScreenManager()
+        self.floating_button = FloatingButton()
+        self.screen_manager.add_widget(self.floating_button)
+        self.screen_manager.add_widget(self.floating_button.test_screen)
 
-if __name__ == "__main__":
-    PasswordApp().run()
+        return self.screen_manager
+
+    def on_start(self):
+        # Placeholder for loading a default file or testing
+        pass
+
+    def on_pause(self):
+        return True  # Keep the app running in the background
+
+
+if __name__ == '__main__':
+    MyApp().run()
